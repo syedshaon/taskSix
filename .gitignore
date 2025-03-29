@@ -1,0 +1,32 @@
+# Node.js
+node_modules/
+package-lock.json
+yarn.lock
+pnpm-lock.yaml
+
+# Next.js
+.next/
+out/
+
+# Build artifacts
+dist/
+build/
+
+# Logs
+*.log
+
+# Environment variables
+.env
+.env.*
+*.local
+
+# OS generated files
+.DS_Store
+Thumbs.db
+Desktop.ini
+
+# IDE specific files
+.idea/
+.vscode/
+*.suo
+*.swp
