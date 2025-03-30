@@ -5,6 +5,8 @@ async function initDb() {
   try {
     await client.query("BEGIN");
 
+    console.log("Initializing database...");
+
     // Create the presentations table
     await client.query(`
       CREATE TABLE IF NOT EXISTS presentations (
@@ -13,6 +15,7 @@ async function initDb() {
         created_at TIMESTAMP DEFAULT NOW()
       );
     `);
+    console.log("✅ Created 'presentations' table.");
 
     // Create the slides table
     await client.query(`
@@ -23,6 +26,7 @@ async function initDb() {
         created_at TIMESTAMP DEFAULT NOW()
       );
     `);
+    console.log("✅ Created 'slides' table.");
 
     // Create the users table
     await client.query(`
@@ -35,27 +39,27 @@ async function initDb() {
         joined_at TIMESTAMP DEFAULT NOW()
       );
     `);
+    console.log("✅ Created 'users' table.");
 
     // Create the slide_elements table
     await client.query(`
       CREATE TABLE IF NOT EXISTS slide_elements (
-      id SERIAL PRIMARY KEY,
-      slide_id INT NOT NULL,
-      type TEXT CHECK (type IN ('text', 'image', 'shape')),
-      content TEXT DEFAULT '',
-      position JSONB DEFAULT '{"x": 0, "y": 0}',
-      size JSONB DEFAULT '{"width": 100, "height": 100}',
-      properties JSONB DEFAULT '{}',
-      created_at TIMESTAMP DEFAULT NOW(),
-      updated_at TIMESTAMP DEFAULT NOW(),
-      FOREIGN KEY (slide_id) REFERENCES slides(id) ON DELETE CASCADE
-    );
-
+        id SERIAL PRIMARY KEY,
+        slide_id INT NOT NULL REFERENCES slides(id) ON DELETE CASCADE,
+        type TEXT CHECK (type IN ('text', 'image', 'shape')),
+        content TEXT DEFAULT '',
+        position JSONB DEFAULT '{"x": 0, "y": 0}',
+        size JSONB DEFAULT '{"width": 100, "height": 100}',
+        properties JSONB DEFAULT '{}',
+        created_at TIMESTAMP DEFAULT NOW(),
+        updated_at TIMESTAMP DEFAULT NOW()
+      );
     `);
+    console.log("✅ Created 'slide_elements' table.");
 
-    // Create a trigger to auto-update the updated_at column on changes
+    // Create function to auto-update 'updated_at'
     await client.query(`
-      CREATE OR REPLACE FUNCTION update_timestamp()
+      CREATE OR REPLACE FUNCTION update_updated_at_column()
       RETURNS TRIGGER AS $$
       BEGIN
         NEW.updated_at = NOW();
@@ -63,20 +67,22 @@ async function initDb() {
       END;
       $$ LANGUAGE plpgsql;
     `);
+    console.log("✅ Created trigger function 'update_updated_at_column'.");
 
     // Attach trigger to slide_elements
     await client.query(`
-      CREATE TRIGGER trigger_update_timestamp
+      CREATE TRIGGER trigger_auto_update_timestamp
       BEFORE UPDATE ON slide_elements
       FOR EACH ROW
-      EXECUTE FUNCTION update_timestamp();
+      EXECUTE FUNCTION update_updated_at_column();
     `);
+    console.log("✅ Attached update trigger to 'slide_elements'.");
 
     await client.query("COMMIT");
-    console.log("Database initialized successfully.");
+    console.log("🎉 Database initialized successfully.");
   } catch (err) {
     await client.query("ROLLBACK");
-    console.error("Database initialization failed:", err);
+    console.error("❌ Database initialization failed:", err);
   } finally {
     client.release();
   }

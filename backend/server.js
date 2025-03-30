@@ -18,7 +18,7 @@ app.use("/api/presentations", presentationRoutes);
 app.use("/api/slides", slideRoutes);
 app.use("/api/slide-elements", slideElementRoutes(wss)); // Pass WebSocket server
 
-// Store active users with their roles
+// Store active users with their roles (Map: userId -> { ws, presentationId, role })
 const activeUsers = new Map();
 
 /**
@@ -40,18 +40,29 @@ wss.on("connection", (ws) => {
       const message = JSON.parse(data);
 
       if (message.type === "join_presentation") {
-        ws.presentationId = message.presentationId;
-        ws.userId = message.userId;
-        ws.role = message.role;
+        const { userId, nickname, presentationId, role } = message;
 
-        activeUsers.set(ws.userId, { ws, presentationId: ws.presentationId, role: ws.role });
+        // Prevent duplicate users from joining multiple times
+        if (activeUsers.has(userId)) {
+          console.log(`User ${userId} is already in presentation ${presentationId}`);
+          return;
+        }
 
-        console.log(`User ${ws.userId} joined presentation ${ws.presentationId} as ${ws.role}`);
+        // Assign properties to WebSocket connection
+        ws.userId = userId;
+        ws.presentationId = presentationId;
+        ws.role = role || "viewer"; // Default to 'viewer' if role is missing
 
-        // ✅ Notify others that user joined
-        broadcast(ws.presentationId, {
+        activeUsers.set(userId, { ws, presentationId, role: ws.role });
+
+        console.log(`User ${userId} joined presentation ${presentationId} as ${ws.role}`);
+
+        // ✅ Notify all users in the same presentation
+        broadcast(presentationId, {
           type: "update_users",
-          users: Array.from(activeUsers.values()).filter((u) => u.presentationId === ws.presentationId),
+          users: Array.from(activeUsers.values())
+            .filter((u) => u.presentationId === presentationId)
+            .map((u) => ({ userId: u.ws.userId, role: u.role })),
         });
       }
     } catch (error) {
@@ -60,16 +71,19 @@ wss.on("connection", (ws) => {
   });
 
   ws.on("close", () => {
-    console.log(`User ${ws.userId} disconnected`);
+    if (!ws.userId || !ws.presentationId) return;
+
+    console.log(`User ${ws.userId} disconnected from presentation ${ws.presentationId}`);
+
     activeUsers.delete(ws.userId);
 
-    // ✅ Ensure proper cleanup
-    if (ws.presentationId) {
-      broadcast(ws.presentationId, {
-        type: "update_users",
-        users: Array.from(activeUsers.values()).filter((u) => u.presentationId === ws.presentationId),
-      });
-    }
+    // ✅ Notify remaining users about disconnection
+    broadcast(ws.presentationId, {
+      type: "update_users",
+      users: Array.from(activeUsers.values())
+        .filter((u) => u.presentationId === ws.presentationId)
+        .map((u) => ({ userId: u.ws.userId, role: u.role })),
+    });
   });
 });
 

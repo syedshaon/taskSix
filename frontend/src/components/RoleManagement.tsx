@@ -17,8 +17,12 @@ export default function RoleManagement({ presentationId, currentUser }: RoleMana
   const { sendMessage, lastMessage } = useWebSocket(); // ✅ Remove argument
 
   useEffect(() => {
+    console.log("Last WebSocket message:", lastMessage); // Debugging
+
     if (lastMessage) {
       const message = JSON.parse(lastMessage.data);
+      console.log("Received message:", message); // See what data arrives
+
       if (message.type === "update_users") {
         setUsers(message.users);
       }
@@ -34,8 +38,8 @@ export default function RoleManagement({ presentationId, currentUser }: RoleMana
     <div className="p-4 bg-gray-100 rounded-md w-64">
       <h2 className="text-lg font-semibold">Connected Users</h2>
       <ul>
-        {users.map((user) => (
-          <li key={user.id} className="flex justify-between items-center p-2 border-b">
+        {users.map((user, index) => (
+          <li key={index} className="flex justify-between items-center p-2 border-b">
             <span>
               {user.nickname} ({user.role})
             </span>
