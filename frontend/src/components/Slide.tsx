@@ -1,88 +1,64 @@
-import React, { useState, useEffect } from "react";
+"use client";
+
+import { useEffect, useState } from "react";
 import { useWebSocket } from "@/app/context/WebSocketContext";
 import TextBlock from "@/components/TextBlock";
-import axios from "axios";
-type TextBlockType = {
-  id: string;
-  content: string;
-  x: number;
-  y: number;
-  width: number;
-  height: number;
-};
+import Shape from "@/components/Shape"; // New component for shapes
 
 type SlideProps = {
   slideId: string;
-  userRole: "viewer" | "editor" | "creator";
+  userRole: "viewer" | "editor" | "creator" | "admin";
+  activeTool: string | null;
+  onContentAdded: (content: any) => void;
 };
 
-export default function Slide({ slideId, userRole }: SlideProps) {
+export default function Slide({ slideId, userRole, activeTool, onContentAdded }: SlideProps) {
+  const [elements, setElements] = useState<any[]>([]);
   const { sendMessage, lastMessage } = useWebSocket();
-  const [textBlocks, setTextBlocks] = useState<TextBlockType[]>([]);
 
   useEffect(() => {
-    axios
-      .get(`http://localhost:5000/api/slide-elements/${slideId}`)
-      .then((res) => setTextBlocks(res.data)) // Store elements correctly
-      .catch((err) => console.error("Error fetching slide elements:", err));
+    // Load existing elements
+    // This would fetch from your API
   }, [slideId]);
 
   useEffect(() => {
     if (!lastMessage) return;
+    // Handle WebSocket updates for elements
+  }, [lastMessage]);
 
-    const message = JSON.parse(lastMessage.data);
+  const handleCanvasClick = (e: React.MouseEvent) => {
+    if (userRole === "viewer" || !activeTool) return;
 
-    setTextBlocks((prev) => {
-      if (message.type === "text_block_added") {
-        // Prevent duplicate blocks
-        if (prev.some((block) => block.id === message.newTextBlock.id)) return prev;
-        return [...prev, message.newTextBlock];
-      }
+    const rect = e.currentTarget.getBoundingClientRect();
+    const x = e.clientX - rect.left;
+    const y = e.clientY - rect.top;
 
-      if (message.type === "text_block_updated") {
-        return prev.map((block) => (block.id === message.id ? { ...block, ...message } : block));
-      }
-
-      return prev;
-    });
-  }, [lastMessage]); // Only run when new WebSocket message arrives
-
-  const addTextBlock = () => {
-    if (userRole === "viewer") return; // Viewers cannot add text blocks
-
-    const newTextBlock: TextBlockType = {
+    const newElement = {
       id: Date.now().toString(),
-      content: "Double-click to edit...",
-      x: 50,
-      y: 50,
-      width: 200,
-      height: 100,
+      type: activeTool,
+      x,
+      y,
+      // Other properties based on the tool
     };
 
-    setTextBlocks((prev) => [...prev, newTextBlock]);
-    sendMessage({ type: "add_text_block", slideId, newTextBlock });
+    setElements((prev) => [...prev, newElement]);
+    onContentAdded(newElement);
   };
 
   return (
-    <div className="relative w-full h-full bg-gray-200">
-      {userRole !== "viewer" && (
-        <button onClick={addTextBlock} className="absolute top-2 left-2 bg-blue-500 text-white px-4 py-2 rounded">
-          Add Text Block
-        </button>
-      )}
-      {textBlocks.map((block, index) => (
-        <TextBlock
-          key={index}
-          id={block.id}
-          slideId={slideId}
-          initialText={block.content}
-          initialX={block.x}
-          initialY={block.y}
-          initialWidth={block.width}
-          initialHeight={block.height}
-          isEditable={userRole !== "viewer"} // Allow editing for editors & creators
-        />
-      ))}
+    <div className="w-full h-full bg-white relative overflow-hidden" onClick={handleCanvasClick}>
+      {elements.map((element) => {
+        switch (element.type) {
+          case "text":
+            return <TextBlock key={element.id} id={element.id} slideId={slideId} initialText={element.content || "New text"} initialX={element.x} initialY={element.y} initialWidth={element.width || 100} initialHeight={element.height || 50} isEditable={userRole !== "viewer"} />;
+          case "rectangle":
+          case "circle":
+          case "arrow":
+            return <Shape key={element.id} type={element.type} x={element.x} y={element.y} width={element.width || 100} height={element.height || 100} color={element.color || "#000000"} />;
+          default:
+            return null;
+        }
+      })}
     </div>
   );
 }

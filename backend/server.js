@@ -5,6 +5,13 @@ import { WebSocketServer } from "ws";
 import presentationRoutes from "./routes/presentations.js";
 import slideRoutes from "./routes/slides.js";
 import slideElementRoutes from "./routes/slideElements.js";
+import uploadRoutes from "./routes/uploads.js";
+import path from "path";
+import { fileURLToPath } from "url";
+import { dirname } from "path";
+
+const __filename = fileURLToPath(import.meta.url);
+const __dirname = dirname(__filename);
 
 const app = express();
 const server = createServer(app);
@@ -12,23 +19,39 @@ const wss = new WebSocketServer({ server });
 
 app.use(cors());
 app.use(express.json());
+app.use(express.urlencoded({ extended: true }));
+
+// Serve static files from uploads directory
+app.use("/uploads", express.static(path.join(__dirname, "public/uploads")));
 
 // API Routes
 app.use("/api/presentations", presentationRoutes);
 app.use("/api/slides", slideRoutes);
 app.use("/api/slide-elements", slideElementRoutes(wss)); // Pass WebSocket server
+app.use("/api/uploads", uploadRoutes);
 
-// Store active users with their roles (Map: userId -> { ws, presentationId, role })
-const activeUsers = new Map();
+// Store active connections (userId -> { ws, presentationId, role, nickname })
+const activeConnections = new Map();
 
-/**
- * Broadcast a message to all users in a specific presentation.
- */
-const broadcast = (presentationId, message, senderWs = null) => {
+// Store presentation state (presentationId -> { elements, slides, users })
+const presentations = new Map();
+
+const broadcastToPresentation = (presentationId, message, excludeUserId = null) => {
   wss.clients.forEach((client) => {
-    if (client.readyState === client.OPEN && client.presentationId === presentationId && client !== senderWs) {
+    if (client.readyState === client.OPEN && client.presentationId === presentationId && client.userId !== excludeUserId) {
       client.send(JSON.stringify(message));
     }
+  });
+};
+
+const updateUsersList = (presentationId) => {
+  const users = Array.from(activeConnections.values())
+    .filter((user) => user.presentationId === presentationId)
+    .map(({ userId, nickname, role }) => ({ userId, nickname, role }));
+
+  broadcastToPresentation(presentationId, {
+    type: "users_updated",
+    users,
   });
 };
 
@@ -37,57 +60,139 @@ wss.on("connection", (ws) => {
 
   ws.on("message", (data) => {
     try {
-      const message = JSON.parse(data);
+      const message = JSON.parse(data.toString());
+      console.log("Received message:", message.type);
 
-      if (message.type === "join_presentation") {
-        const { userId, nickname, presentationId, role } = message;
+      switch (message.type) {
+        case "join_presentation": {
+          const { userId, nickname, presentationId, role = "viewer" } = message;
 
-        // Prevent duplicate users from joining multiple times
-        if (activeUsers.has(userId)) {
-          console.log(`User ${userId} is already in presentation ${presentationId}`);
-          return;
+          // Initialize presentation state if not exists
+          if (!presentations.has(presentationId)) {
+            presentations.set(presentationId, {
+              elements: [],
+              slides: [],
+              currentSlideIndex: 0,
+            });
+          }
+
+          // Store connection info
+          ws.userId = userId;
+          ws.presentationId = presentationId;
+          activeConnections.set(userId, {
+            ws,
+            presentationId,
+            role,
+            nickname,
+          });
+
+          // Send current presentation state to the new user
+          const presentation = presentations.get(presentationId);
+          ws.send(
+            JSON.stringify({
+              type: "presentation_state",
+              slides: presentation.slides,
+              currentSlideIndex: presentation.currentSlideIndex,
+              elements: presentation.elements,
+            })
+          );
+
+          // Notify all users in the presentation
+          updateUsersList(presentationId);
+          break;
         }
 
-        // Assign properties to WebSocket connection
-        ws.userId = userId;
-        ws.presentationId = presentationId;
-        ws.role = role || "viewer"; // Default to 'viewer' if role is missing
+        case "add_element": {
+          const { presentationId, element } = message;
+          const presentation = presentations.get(presentationId);
+          if (presentation) {
+            presentation.elements = [...presentation.elements, element];
+            broadcastToPresentation(
+              presentationId,
+              {
+                type: "element_added",
+                element,
+              },
+              ws.userId
+            );
+          }
+          break;
+        }
 
-        activeUsers.set(userId, { ws, presentationId, role: ws.role });
+        case "update_element": {
+          const { presentationId, elementId, updates } = message;
+          const presentation = presentations.get(presentationId);
+          if (presentation) {
+            presentation.elements = presentation.elements.map((el) => (el.id === elementId ? { ...el, ...updates } : el));
+            broadcastToPresentation(
+              presentationId,
+              {
+                type: "element_updated",
+                elementId,
+                updates,
+              },
+              ws.userId
+            );
+          }
+          break;
+        }
 
-        console.log(`User ${userId} joined presentation ${presentationId} as ${ws.role}`);
+        case "change_slide": {
+          const { presentationId, slideIndex } = message;
+          const presentation = presentations.get(presentationId);
+          if (presentation) {
+            presentation.currentSlideIndex = slideIndex;
+            broadcastToPresentation(presentationId, {
+              type: "slide_changed",
+              slideIndex,
+            });
+          }
+          break;
+        }
 
-        // ✅ Notify all users in the same presentation
-        broadcast(presentationId, {
-          type: "update_users",
-          users: Array.from(activeUsers.values())
-            .filter((u) => u.presentationId === presentationId)
-            .map((u) => ({ userId: u.ws.userId, role: u.role })),
-        });
+        case "change_role": {
+          const { userId, newRole, presentationId } = message;
+          const user = activeConnections.get(userId);
+          if (user && user.presentationId === presentationId) {
+            user.role = newRole;
+            if (user.ws.readyState === user.ws.OPEN) {
+              user.ws.role = newRole;
+              user.ws.send(
+                JSON.stringify({
+                  type: "role_changed",
+                  newRole,
+                })
+              );
+            }
+            updateUsersList(presentationId);
+          }
+          break;
+        }
       }
     } catch (error) {
-      console.error("Invalid WebSocket message:", error);
+      console.error("Error processing message:", error);
     }
   });
 
   ws.on("close", () => {
-    if (!ws.userId || !ws.presentationId) return;
+    if (!ws.userId) return;
 
-    console.log(`User ${ws.userId} disconnected from presentation ${ws.presentationId}`);
+    activeConnections.delete(ws.userId);
+    if (ws.presentationId) {
+      updateUsersList(ws.presentationId);
+    }
 
-    activeUsers.delete(ws.userId);
-
-    // ✅ Notify remaining users about disconnection
-    broadcast(ws.presentationId, {
-      type: "update_users",
-      users: Array.from(activeUsers.values())
-        .filter((u) => u.presentationId === ws.presentationId)
-        .map((u) => ({ userId: u.ws.userId, role: u.role })),
-    });
+    console.log(`User ${ws.userId} disconnected`);
   });
 });
 
-const PORT = 5000;
+// Error handling middleware
+app.use((err, req, res, next) => {
+  console.error(err.stack);
+  res.status(500).send("Something broke!");
+});
+
+const PORT = process.env.PORT || 5000;
 server.listen(PORT, () => {
   console.log(`Server running on http://localhost:${PORT}`);
 });
